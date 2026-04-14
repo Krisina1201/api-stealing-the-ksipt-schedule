@@ -274,6 +274,7 @@ async def get_schedule_by_group_name(
         group_id = groups[group_name]
         lessons = parse_schedule_for_group(group_id, group_name)
 
+
         return {
             "group": group_name,
             "group_id": group_id,
@@ -284,6 +285,143 @@ async def get_schedule_by_group_name(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+from datetime import date
+from datetime import datetime
+
+
+@app.get("/schedule/classroom/{room_number}")
+async def get_schedule_by_classroom(
+        room_number: str,
+        force_refresh_groups: bool = False
+):
+    try:
+        # находим все группы
+        groups_all = fetch_groups(force_refresh_groups)
+        groups_items = list(groups_all.items())[11:]  # список кортежей (ключ, значение)
+        groups = dict(groups_items)
+        today = date.today()
+
+        #переменная для подходящих значений
+        classroom_schedule = []
+        errors = []
+
+        #так как в переменной с группами лежат два значения, перебираем их оба
+        for group_name, group_id in groups.items():
+            try:
+                lessons = parse_schedule_for_group(group_id, group_name)
+
+                for lesson in lessons:
+                    lesson_date_obj = datetime.strptime(lesson.date, '%d.%m.%Y').date()
+                    if lesson_date_obj != today:
+                        continue
+
+                    if (room_number == lesson.classroom):
+                        lesson_data = {
+                            "group": group_name,
+                            "group_id": group_id,
+                            "classroom": lesson.classroom,
+                            "time": getattr(lesson, 'time', 'Время не указано'),
+                            "subject": lesson.discipline, #getattr(lesson, 'subject', 'Предмет не указан'),
+                            "teacher": getattr(lesson, 'teacher', 'Преподаватель не указан'),
+                        }
+
+                        classroom_schedule.append(lesson_data)
+        #
+            except Exception as e:
+                errors.append(f"Ошибка при обработке группы {group_name}: {str(e)}")
+        #
+        classroom_schedule.sort(key=lambda x: x.get('time', ''))
+
+        if not classroom_schedule:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": f"На сегодня ({today}) не найдено занятий в кабинете {room_number}",
+                    "room": room_number,
+                    "date": today.isoformat(),
+                    "possible_reasons": [
+                        "Проверьте правильность номера кабинета",
+                        "В кабинете могут быть занятия в другой день",
+                        "Возможно, поле с кабинетом называется иначе",
+                        f"Всего проверено групп: {len(groups)}"
+                    ],
+                    "debug_errors": errors if errors else None
+                }
+            )
+
+        return {
+            "room": room_number,
+            "date": today.isoformat(),
+            "total_lessons": len(classroom_schedule),
+            "schedule": classroom_schedule
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/schedule/classrooms/all")
+async def get_all_classrooms(
+        force_refresh_groups: bool = False
+):
+    """
+    Получить список всех уникальных кабинетов из расписания
+    """
+    try:
+        groups = fetch_groups(force_refresh_groups)
+
+        all_classrooms = set()
+        classrooms_details = {}
+
+        for group_name, group_id in groups.items():
+            lessons = parse_schedule_for_group(group_id, group_name)
+
+            for lesson in lessons:
+                # Определяем поле с кабинетом
+                classroom = None
+                if hasattr(lesson, 'classroom'):
+                    classroom = lesson.classroom
+                elif hasattr(lesson, 'room'):
+                    classroom = lesson.room
+                elif hasattr(lesson, 'auditorium'):
+                    classroom = lesson.auditorium
+                elif hasattr(lesson, 'cabinet'):
+                    classroom = lesson.cabinet
+
+                if classroom and str(classroom).strip():
+                    classroom_str = str(classroom).strip()
+                    all_classrooms.add(classroom_str)
+
+                    # Собираем дополнительную информацию
+                    if classroom_str not in classrooms_details:
+                        classrooms_details[classroom_str] = {
+                            "count": 0,
+                            "groups": set()
+                        }
+                    classrooms_details[classroom_str]["count"] += 1
+                    classrooms_details[classroom_str]["groups"].add(group_name)
+
+        # Сортируем кабинеты
+        sorted_classrooms = sorted(all_classrooms)
+
+        # Преобразуем множества в списки для JSON
+        for classroom in classrooms_details:
+            classrooms_details[classroom]["groups"] = list(classrooms_details[classroom]["groups"])
+
+        return {
+            "total_classrooms": len(sorted_classrooms),
+            "classrooms": sorted_classrooms,
+            "details": classrooms_details
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 @app.get("/schedule/group-id/{group_id}")
