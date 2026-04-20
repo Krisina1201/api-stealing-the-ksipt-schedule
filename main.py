@@ -55,10 +55,16 @@ class Lesson:
 
 class InventoryItem(BaseModel):
     """Модель для предмета инвентаря"""
-    inventory_id: Optional[int] = None
-    classroom_id: Optional[int] = None
-    item_type: Optional[int] = None
+    inventory_number: Optional[int] = None
     item_name: Optional[str] = None
+    manufacturer: Optional[str] = None
+    model: Optional[str] = None
+    condition_description: Optional[str] = None
+    warranty_until: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    inventory_type_title: Optional[str] = None
 
 
 class ResponsiblePerson(BaseModel):
@@ -253,40 +259,6 @@ async def get_groups(force_refresh: bool = False):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/schedule/group/{group_name}")
-async def get_schedule_by_group_name(
-        group_name: str,
-        force_refresh_groups: bool = False
-):
-    try:
-        groups = fetch_groups(force_refresh_groups)
-
-        if group_name not in groups:
-            similar = [g for g in groups.keys() if group_name.lower() in g.lower()]
-            raise HTTPException(
-                status_code=404,
-                detail={
-                    "message": f"Группа '{group_name}' не найдена",
-                    "similar_groups": similar[:5]
-                }
-            )
-
-        group_id = groups[group_name]
-        lessons = parse_schedule_for_group(group_id, group_name)
-
-
-        return {
-            "group": group_name,
-            "group_id": group_id,
-            "total_lessons": len(lessons),
-            "schedule": [asdict(lesson) for lesson in lessons]
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 from datetime import date
 from datetime import datetime
 
@@ -423,106 +395,64 @@ async def get_all_classrooms(
 
 
 
-
-@app.get("/schedule/group-id/{group_id}")
-async def get_schedule_by_group_id(group_id: str):
-    try:
-        lessons = parse_schedule_for_group(group_id, f"ID:{group_id}")
-        return {
-            "group_id": group_id,
-            "total_lessons": len(lessons),
-            "schedule": [asdict(lesson) for lesson in lessons]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/search")
-async def search_schedule(
-        group: Optional[str] = None,
-        teacher: Optional[str] = None,
-        date_from: Optional[str] = None,
-        date_to: Optional[str] = None
-):
-    try:
-        groups = fetch_groups()
-
-        if not group and not teacher:
-            raise HTTPException(
-                status_code=400,
-                detail="Укажите хотя бы один параметр поиска (group или teacher)"
-            )
-
-        all_lessons = []
-
-        if group:
-            if group in groups:
-                lessons = parse_schedule_for_group(groups[group], group)
-                all_lessons.extend(lessons)
-            else:
-                raise HTTPException(status_code=404, detail=f"Группа '{group}' не найдена")
-
-        if date_from or date_to:
-            filtered = []
-            for lesson in all_lessons:
-                if date_from and lesson.date < date_from:
-                    continue
-                if date_to and lesson.date > date_to:
-                    continue
-                filtered.append(lesson)
-            all_lessons = filtered
-
-        if teacher:
-            filtered = []
-            for lesson in all_lessons:
-                if teacher.lower() in lesson.teacher.lower():
-                    filtered.append(lesson)
-            all_lessons = filtered
-
-        return {
-            "search_params": {
-                "group": group,
-                "teacher": teacher,
-                "date_from": date_from,
-                "date_to": date_to
-            },
-            "total_found": len(all_lessons),
-            "results": [asdict(lesson) for lesson in all_lessons]
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 # ========== ЭНДПОИНТЫ ИНВЕНТАРЯ И ОТВЕТСТВЕННЫХ ==========
 
-@app.get("/inventory/{classroom_id}", response_model=List[InventoryItem])
-async def get_inventory_by_classroom(classroom_id: int):
+
+
+
+@app.get("/inventory/{classroom_name}", response_model=List[InventoryItem])
+async def get_inventory_by_classroom(classroom_name: str):
     """
     Получить инвентарь для указанной аудитории
 
-    - **classroom_id**: ID аудитории
+    - **classroom_name**: Номер аудитории (например: 101, 3.35, А-408)
     """
     conn = None
     try:
         conn = get_db_connection()
 
+        # Получаем ID аудитории по ее номеру
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT * FROM get_inventory_type_func(%s)",
-                (classroom_id,)
-            )
-            result = cur.fetchall()
+            cur.execute("SELECT * FROM get_classroom_func2(%s)", (classroom_name,))
+            result = cur.fetchone()
 
-            if not result:
+            if not result or 'id' not in result:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Инвентарь для аудитории {classroom_id} не найден"
+                    detail=f"Аудитория '{classroom_name}' не найдена"
                 )
 
-            conn.commit()
-            return result
+            classroom_id = result['id']
+
+        # Получаем инвентарь для найденной аудитории
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM get_inventory_type_func(%s)", (classroom_id,))
+            results = cur.fetchall()
+
+            if not results:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Инвентарь для аудитории {classroom_name} (ID: {classroom_id}) не найден"
+                )
+
+            # Преобразуем результаты в список объектов InventoryItem
+            items = [
+                InventoryItem(
+                    inventory_number=row.get("inventory_number"),
+                    item_name=row.get("item_name"),
+                    manufacturer=row.get("manufacturer"),
+                    model=row.get("model"),
+                    condition_description=row.get("condition_description"),
+                    warranty_until=str(row.get("warranty_until")) if row.get("warranty_until") else None,
+                    notes=row.get("notes"),
+                    created_at=str(row.get("created_at")) if row.get("created_at") else None,
+                    updated_at=str(row.get("updated_at")) if row.get("updated_at") else None,
+                    inventory_type_title=row.get("inventory_type_title")
+                )
+                for row in results
+            ]
+
+            return items
 
     except HTTPException:
         raise
